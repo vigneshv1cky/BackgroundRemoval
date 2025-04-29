@@ -1,152 +1,142 @@
 import streamlit as st
 from rembg import remove
 from PIL import Image
-import numpy as np
 from io import BytesIO
-import base64
 import os
-import traceback
 import time
+from pathlib import Path
 
-st.set_page_config(layout="wide", page_title="Image Background Remover")
-
-st.write("## Remove background from your image")
-st.write(
-    ":dog: Try uploading an image to watch the background magically removed. Full quality images can be downloaded from the sidebar. This code is open source and available [here](https://github.com/tyler-simons/BackgroundRemoval) on GitHub. Special thanks to the [rembg library](https://github.com/danielgatis/rembg) :grin:"
+# --- App Configuration ---
+# Set page title, layout, and initial sidebar state
+st.set_page_config(
+    page_title="Image Background Remover",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
-st.sidebar.write("## Upload and download :gear:")
-
-# Increased file size limit
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
-
-# Max dimensions for processing
-MAX_IMAGE_SIZE = 2000  # pixels
 
 
-# Download the fixed image
-def convert_image(img):
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    byte_im = buf.getvalue()
-    return byte_im
+# --- Constants ---
+# Maximum allowed file size (10 MB)
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+# Maximum dimension (width or height) for resizing images
+MAX_DIMENSION = 2000  # pixels
 
 
-# Resize image while maintaining aspect ratio
-def resize_image(image, max_size):
-    width, height = image.size
-    if width <= max_size and height <= max_size:
-        return image
-
-    if width > height:
-        new_width = max_size
-        new_height = int(height * (max_size / width))
-    else:
-        new_height = max_size
-        new_width = int(width * (max_size / height))
-
-    return image.resize((new_width, new_height), Image.LANCZOS)
-
-
-@st.cache_data
-def process_image(image_bytes):
-    """Process image with caching to avoid redundant processing"""
-    try:
-        image = Image.open(BytesIO(image_bytes))
-        # Resize large images to prevent memory issues
-        resized = resize_image(image, MAX_IMAGE_SIZE)
-        # Process the image
-        fixed = remove(resized)
-        return image, fixed
-    except Exception as e:
-        st.error(f"Error processing image: {str(e)}")
-        return None, None
-
-
-def fix_image(upload):
-    try:
-        start_time = time.time()
-        progress_bar = st.sidebar.progress(0)
-        status_text = st.sidebar.empty()
-
-        status_text.text("Loading image...")
-        progress_bar.progress(10)
-
-        # Read image bytes
-        if isinstance(upload, str):
-            # Default image path
-            if not os.path.exists(upload):
-                st.error(f"Default image not found at path: {upload}")
-                return
-            with open(upload, "rb") as f:
-                image_bytes = f.read()
-        else:
-            # Uploaded file
-            image_bytes = upload.getvalue()
-
-        status_text.text("Processing image...")
-        progress_bar.progress(30)
-
-        # Process image (using cache if available)
-        image, fixed = process_image(image_bytes)
-        if image is None or fixed is None:
-            return
-
-        progress_bar.progress(80)
-        status_text.text("Displaying results...")
-
-        # Display images
-        col1.write("Original Image :camera:")
-        col1.image(image)
-
-        col2.write("Fixed Image :wrench:")
-        col2.image(fixed)
-
-        # Prepare download button
-        st.sidebar.markdown("\n")
-        st.sidebar.download_button(
-            "Download fixed image", convert_image(fixed), "fixed.png", "image/png"
-        )
-
-        progress_bar.progress(100)
-        processing_time = time.time() - start_time
-        status_text.text(f"Completed in {processing_time:.2f} seconds")
-
-    except Exception as e:
-        st.error(f"An error occurred: {str(e)}")
-        st.sidebar.error("Failed to process image")
-        # Log the full error for debugging
-        print(f"Error in fix_image: {traceback.format_exc()}")
-
-
-# UI Layout
-col1, col2 = st.columns(2)
-my_upload = st.sidebar.file_uploader("Upload an image", type=["png", "jpg", "jpeg"])
-
-# Information about limitations
-with st.sidebar.expander("ℹ️ Image Guidelines"):
-    st.write(
-        """
-    - Maximum file size: 10MB
-    - Large images will be automatically resized
-    - Supported formats: PNG, JPG, JPEG
-    - Processing time depends on image size
+# --- Utility Functions ---
+def resize_image(image: Image.Image, max_dim: int) -> Image.Image:
     """
-    )
+    Resize an image while preserving aspect ratio.
 
-# Process the image
-if my_upload is not None:
-    if my_upload.size > MAX_FILE_SIZE:
-        st.error(
-            f"The uploaded file is too large. Please upload an image smaller than {MAX_FILE_SIZE/1024/1024:.1f}MB."
+    Args:
+        image: PIL Image to resize.
+        max_dim: Maximum width or height.
+
+    Returns:
+        Resized PIL Image if larger than max_dim, else original.
+    """
+    w, h = image.size
+    # If both dimensions are within limits, return original
+    if max(w, h) <= max_dim:
+        return image
+    # Compute scaling factor based on larger dimension
+    scale = max_dim / max(w, h)
+    # Resize with high-quality Lanczos filter
+    return image.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+
+@st.cache_data(show_spinner=False)
+def process_image(image_bytes: bytes) -> Image.Image:
+    """
+    Remove the background from image bytes using rembg.
+
+    Args:
+        image_bytes: Raw image data as bytes.
+
+    Returns:
+        PIL Image with transparent background.
+    """
+    # Open image and convert to RGBA (to include alpha channel)
+    img = Image.open(BytesIO(image_bytes)).convert("RGBA")
+    # Resize large images to speed up processing
+    img = resize_image(img, MAX_DIMENSION)
+    # Remove background
+    result = remove(img)
+    return result
+
+
+# --- Sidebar: Upload & Settings ---
+st.sidebar.title("Upload & Settings")
+# File uploader for PNG/JPG images
+upload = st.sidebar.file_uploader(
+    "Choose an image (PNG/JPG)", type=["png", "jpg", "jpeg"]
+)
+
+# Option to fill transparent background with a solid color
+fill_bg = st.sidebar.checkbox("Fill background with color", value=False)
+if fill_bg:
+    bg_color = st.sidebar.color_picker("Background fill color", "#FFFFFF")
+else:
+    bg_color = None
+
+# --- Main Interface ---
+st.title("🖼️ Image Background Remover")
+st.write(
+    "Upload an image to remove its background. You can optionally fill the transparent areas with a custom color."
+)
+
+if upload:
+    # Check file size limit
+    if hasattr(upload, "size") and upload.size > MAX_FILE_SIZE:
+        st.sidebar.error(
+            f"File too large: Max size is {MAX_FILE_SIZE // (1024*1024)} MB."
         )
     else:
-        fix_image(upload=my_upload)
+        # Read image bytes from upload
+        img_bytes = upload.read() if hasattr(upload, "read") else upload.getvalue()
+        start = time.time()
+        progress = st.sidebar.progress(0)
+        status = st.sidebar.empty()
+
+        # Update sidebar status and progress
+        status.info("Processing...")
+        progress.progress(20)
+        # Remove background
+        result = process_image(img_bytes)
+        progress.progress(80)
+
+        # If user wants to fill background, composite image over chosen color
+        if fill_bg and bg_color:
+            bg = Image.new("RGB", result.size, bg_color)
+            bg.paste(result, mask=result.split()[3])
+            final = bg
+        else:
+            final = result
+
+        progress.progress(100)
+        elapsed = time.time() - start
+        status.success(f"Done in {elapsed:.2f}s")
+
+        # Display original and processed images side by side
+        col1, col2 = st.columns(2)
+        col1.header("Original")
+        col1.image(Image.open(BytesIO(img_bytes)), use_container_width=True)
+        col2.header("Processed")
+        col2.image(final, use_container_width=True)
+
+        # Prepare download of processed image
+        if final.mode == "RGBA":
+            fmt, ext = "PNG", "png"
+        else:
+            fmt, ext = "JPEG", "jpg"
+        download_name = f"processed_background_removed.{ext}"
+        buf = BytesIO()
+        final.save(buf, format=fmt)
+        st.sidebar.download_button(
+            "Download image",
+            data=buf.getvalue(),
+            file_name=download_name,
+            mime=f"image/{ext}",
+        )
 else:
-    # Try default images in order of preference
-    default_images = ["./zebra.jpg", "./wallaby.png"]
-    for img_path in default_images:
-        if os.path.exists(img_path):
-            fix_image(img_path)
-            break
-    else:
-        st.info("Please upload an image to get started!")
+    # Prompt user to upload or select example
+    st.info("👆 Upload an image or choose an example to get started!")
